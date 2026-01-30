@@ -37,11 +37,28 @@ Módulo para Odoo 17 Enterprise que permite definir un **tipo de cambio manual**
 - **`use_custom_rate`** (Boolean): Heredado del presupuesto de compra
 - **`custom_currency_rate`** (Float): Tasa heredada del presupuesto
 
+#### Posicionamiento en Vista
+Los campos se posicionan **antes de `l10n_latam_document_type_id`** (Tipo de Documento) para mejor UX:
+
+```xml
+<xpath expr="//field[@name='l10n_latam_document_type_id']" position="before">
+    <field name="purchase_id" invisible="1"/>  <!-- Necesario para modifiers -->
+    <field name="use_custom_rate" widget="boolean_toggle"/>
+    <field name="custom_currency_rate" invisible="not use_custom_rate"/>
+</xpath>
+```
+
+**Por qué antes del Tipo de Documento**:
+- Agrupación lógica: moneda y tipo de cambio están relacionados
+- Mejor flujo visual: el usuario define moneda → tipo de cambio → documento
+- Evita campos dispersos en el formulario
+
 #### Comportamiento
 1. **Herencia Automática**: Al crear una factura desde un presupuesto, hereda automáticamente la configuración de tipo de cambio
 2. **Campo de Solo Lectura**: Si la factura proviene de un presupuesto, el tipo de cambio es de solo lectura (evita inconsistencias)
 3. **Facturas Directas**: Permite definir tipo de cambio manual en facturas creadas directamente (sin presupuesto)
 4. **Visibilidad**: Solo visible en facturas de proveedor (`in_invoice`, `in_refund`)
+5. **Declaración de `purchase_id`**: Se declara invisible para poder usarlo en el modifier `readonly="purchase_id"` sin errores de permisos
 
 ---
 
@@ -82,7 +99,8 @@ purchase_custom_rate/
 ├── models/
 │   ├── __init__.py
 │   ├── purchase_order.py            # Extensión de purchase.order
-│   └── account_move.py              # Extensión de account.move
+│   ├── account_move.py              # Extensión de account.move
+│   └── res_currency.py              # Extensión de res.currency (conversiones)
 ├── views/
 │   └── purchase_order_views.xml     # Vistas de interfaz
 └── security/
@@ -286,11 +304,309 @@ def _compute_amount(self):
 
 ---
 
-#### 8. `_compute_totals(self)` (Account Move Line)
+## Cálculo de Apuntes Contables
 
-**Propósito**: Idéntico al anterior, pero para líneas de factura.
+### Problema a Resolver
 
-**Patrón**: Decorator Pattern (envolvemos funcionalidad existente con contexto adicional)
+Cuando se crea una factura en moneda extranjera, Odoo debe generar apuntes contables (journal entries) que conviertan los importes a la moneda de la compañía. **El desafío es asegurar que esta conversión use el tipo de cambio manual, no el del sistema.**
+
+### Arquitectura de la Solución
+
+La solución tiene **3 capas** que trabajan juntas:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  1. CAPA DE VISTA (account.move)                        │
+│     - Posiciona campos antes de l10n_latam_document_type_id│
+│     - Inyecta contexto en _recompute_dynamic_lines()   │
+└─────────────────────────────────────────────────────────┘
+                        ↓
+┌─────────────────────────────────────────────────────────┐
+│  2. CAPA DE LÍNEAS (account.move.line)                  │
+│     - _compute_currency_rate(): Almacena tasa manual    │
+│     - _compute_debit_credit(): Calcula balance          │
+│     - _compute_balance(): Consistencia debit - credit   │
+└─────────────────────────────────────────────────────────┘
+                        ↓
+┌─────────────────────────────────────────────────────────┐
+│  3. CAPA DE CONVERSIÓN (res.currency)                   │
+│     - _get_conversion_rate(): Retorna tasa manual       │
+│     - _convert(): Convierte montos con tasa manual      │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Detalle de Funciones - `res_currency.py`
+
+#### 9. `_get_conversion_rate(self, from_currency, to_currency, company, date)`
+
+**Propósito**: Interceptar TODAS las solicitudes de tipo de cambio en Odoo.
+
+**Funcionamiento**:
+```python
+def _get_conversion_rate(self, from_currency, to_currency, company, date):
+    # Por qué: Verificar si hay tipo de cambio manual en el contexto
+    custom_rate = self._context.get('custom_currency_rate')
+
+    if custom_rate:
+        return custom_rate  # Usar tasa manual
+
+    # Sino, usar cálculo estándar del sistema
+    return super()._get_conversion_rate(from_currency, to_currency, company, date)
+```
+
+**Integración**:
+- **Contexto**: La tasa manual viaja en `self._context['custom_currency_rate']`
+- **Fallback**: Si NO hay tasa manual → usa tipo de cambio del sistema ✓
+- **Alcance**: Afecta a TODOS los módulos que conviertan moneda
+
+---
+
+#### 10. `_convert(self, from_amount, to_currency, company, date, round=True)`
+
+**Propósito**: Convertir importes entre monedas usando la tasa manual.
+
+**Funcionamiento**:
+```python
+def _convert(self, from_amount, to_currency, company, date, round=True):
+    custom_rate = self._context.get('custom_currency_rate')
+
+    if custom_rate and self != to_currency:
+        # Fórmula: from_amount * custom_rate = to_amount
+        # Ejemplo: 100 USD * 1000 = 100,000 ARS
+        to_amount = from_amount * custom_rate
+
+        if round:
+            to_amount = to_currency.round(to_amount)
+
+        return to_amount
+
+    # Fallback: usar método estándar
+    return super()._convert(from_amount, to_currency, company, date, round)
+```
+
+**Ejemplo Real**:
+```
+Factura de compra:
+  - Moneda: USD
+  - Monto: 100.00 USD
+  - Tipo de cambio manual: 1000 (1 USD = 1000 ARS)
+  - Moneda de compañía: ARS
+
+Cálculo:
+  to_amount = 100.00 * 1000 = 100,000.00 ARS
+
+Apunte contable generado:
+  Debe:  100,000.00 ARS (Gastos)
+  Haber: 100,000.00 ARS (Cuentas por Pagar)
+```
+
+---
+
+### Detalle de Funciones - Actualización de `account_move.py`
+
+#### 11. `_recompute_dynamic_lines(self, recompute_all_taxes, recompute_tax_base_amount)`
+
+**Propósito**: Inyectar el tipo de cambio manual en el contexto cuando se recalculan líneas.
+
+**Cuándo se ejecuta**:
+- Al guardar la factura
+- Al modificar líneas
+- Al calcular impuestos
+- Al validar la factura
+
+**Funcionamiento**:
+```python
+def _recompute_dynamic_lines(self, recompute_all_taxes=False, recompute_tax_base_amount=False):
+    if self.use_custom_rate and self.custom_currency_rate:
+        # Inyectar tasa en contexto para que viaje a todos los métodos
+        self = self.with_context(custom_currency_rate=self.custom_currency_rate)
+
+    return super()._recompute_dynamic_lines(
+        recompute_all_taxes=recompute_all_taxes,
+        recompute_tax_base_amount=recompute_tax_base_amount
+    )
+```
+
+**Por qué es crítico**:
+- Este método es el **punto de entrada** donde se inyecta el contexto
+- De aquí se propaga a `_compute_debit_credit()` → `_convert()` → apuntes contables
+
+---
+
+### Detalle de Funciones - `account.move.line`
+
+#### 12. `_compute_currency_rate(self)`
+
+**Propósito**: Calcular y almacenar el tipo de cambio para cada línea de apunte contable.
+
+**Decorador**:
+```python
+@api.depends(
+    'currency_id',
+    'company_id',
+    'move_id.date',
+    'move_id.use_custom_rate',        # Detecta cuando se activa
+    'move_id.custom_currency_rate',   # Detecta cambios en la tasa
+)
+```
+
+**Funcionamiento**:
+```python
+def _compute_currency_rate(self):
+    for line in self:
+        if line.move_id.use_custom_rate and line.move_id.custom_currency_rate:
+            # Asignar directamente la tasa manual
+            line.currency_rate = line.move_id.custom_currency_rate
+        else:
+            # Fallback: calcular tasa estándar del sistema
+            super(AccountMoveLine, line)._compute_currency_rate()
+```
+
+**Campo `currency_rate`**:
+- Es un campo **almacenado** en la base de datos
+- Odoo lo usa para mostrar información y auditoría
+- **No afecta** directamente el cálculo (que se hace en `_compute_debit_credit`)
+
+---
+
+#### 13. `_compute_debit_credit(self)` ⭐ **MÉTODO CRÍTICO**
+
+**Propósito**: Convertir `amount_currency` (en moneda extranjera) a `debit`/`credit` (en moneda de compañía).
+
+**Por qué es crítico**: Aquí es donde se hace la conversión REAL que genera los apuntes contables.
+
+**Decorador**:
+```python
+@api.depends(
+    'amount_currency',           # Monto en moneda extranjera
+    'currency_id',
+    'move_id.use_custom_rate',
+    'move_id.custom_currency_rate'
+)
+```
+
+**Funcionamiento**:
+```python
+def _compute_debit_credit(self):
+    for line in self:
+        if line.move_id.use_custom_rate and line.move_id.custom_currency_rate:
+            company_currency = line.move_id.company_id.currency_id
+
+            if line.currency_id and line.currency_id != company_currency:
+                # CONVERSIÓN CON TASA MANUAL
+                # Por qué: Usamos _convert() con contexto para mantener consistencia
+                balance = line.currency_id.with_context(
+                    custom_currency_rate=line.move_id.custom_currency_rate
+                )._convert(
+                    line.amount_currency,  # 100 USD
+                    company_currency,      # ARS
+                    line.move_id.company_id,
+                    line.move_id.date,
+                    round=True
+                )
+                # balance = 100,000 ARS (si tasa = 1000)
+            else:
+                balance = line.amount_currency
+
+            # Asignar a débito o crédito según el signo
+            if balance > 0:
+                line.debit = balance
+                line.credit = 0
+            else:
+                line.debit = 0
+                line.credit = -balance
+        else:
+            # Fallback: usar cálculo estándar de Odoo
+            super(AccountMoveLine, line)._compute_debit_credit()
+```
+
+**Ejemplo de Ejecución**:
+```
+Línea de factura:
+  amount_currency = -100.00 USD (negativo porque es compra)
+  custom_currency_rate = 1000
+
+Paso 1: Llamar _convert()
+  balance = currency_id._convert(-100.00, ARS, ...)
+
+Paso 2: _convert() usa custom_rate del contexto
+  balance = -100.00 * 1000 = -100,000.00 ARS
+
+Paso 3: Asignar según signo
+  balance < 0 → credit = 100,000.00 ARS, debit = 0
+```
+
+---
+
+#### 14. `_compute_balance(self)`
+
+**Propósito**: Calcular balance como `debit - credit`.
+
+**Por qué existe**: Odoo usa `balance` en reportes y consultas. Debe ser consistente con debit/credit.
+
+**Funcionamiento**:
+```python
+@api.depends('debit', 'credit')
+def _compute_balance(self):
+    for line in self:
+        line.balance = line.debit - line.credit
+```
+
+**Invariante**: Siempre `balance = debit - credit` (regla contable universal)
+
+---
+
+### Flujo Completo de Conversión
+
+```
+1. Usuario guarda factura de 100 USD con tasa manual = 1000
+   ↓
+2. _recompute_dynamic_lines() inyecta contexto:
+   self._context = {'custom_currency_rate': 1000}
+   ↓
+3. Por cada línea de factura, Odoo ejecuta _compute_debit_credit()
+   ↓
+4. _compute_debit_credit() llama:
+   currency_id._convert(100, ARS, ..., context={'custom_currency_rate': 1000})
+   ↓
+5. res.currency._convert() detecta custom_rate en contexto:
+   balance = 100 * 1000 = 100,000 ARS
+   ↓
+6. Se asigna a debit/credit según signo
+   ↓
+7. _compute_balance() calcula balance = debit - credit
+   ↓
+8. Apuntes contables guardados con tipo de cambio manual ✓
+```
+
+---
+
+### Garantía de Fallback al Sistema
+
+**Pregunta**: ¿Qué pasa si NO se define tipo de cambio manual?
+
+**Respuesta**: Todos los métodos tienen fallback al sistema:
+
+```python
+# res_currency.py
+if custom_rate:
+    return custom_rate
+else:
+    return super()._get_conversion_rate(...)  # ← SISTEMA
+
+# account_move_line.py
+if line.move_id.use_custom_rate:
+    # usar manual
+else:
+    super()._compute_debit_credit()  # ← SISTEMA
+```
+
+**Comportamiento**:
+- `use_custom_rate = False` → Usa tipo de cambio del sistema ✓
+- `use_custom_rate = True` → Usa `custom_currency_rate` ✓
+- Compatibilidad total con facturas normales ✓
 
 ---
 
@@ -328,21 +644,53 @@ def _compute_amount(self):
 
 ## Métodos Nativos de Odoo Utilizados
 
-### `res.currency._get_conversion_rate()`
-- **Propósito**: Obtener tipo de cambio entre dos monedas en una fecha específica
-- **Uso**: Pre-cargar valor inicial del tipo de cambio
+### Métodos de Conversión de Moneda
 
-### `purchase.order._prepare_invoice()`
+#### `res.currency._get_conversion_rate(from_currency, to_currency, company, date)`
+- **Propósito**: Obtener tipo de cambio entre dos monedas en una fecha específica
+- **Uso**: Sobrescrito para retornar tasa manual si está en contexto
+- **Fallback**: Si no hay tasa manual, usa tasas del sistema
+
+#### `res.currency._convert(from_amount, to_currency, company, date, round=True)`
+- **Propósito**: Convertir un importe de una moneda a otra
+- **Uso**: Sobrescrito para hacer conversión con tasa manual
+- **Fórmula**: `to_amount = from_amount * custom_rate`
+
+### Métodos de Presupuestos
+
+#### `purchase.order._prepare_invoice()`
 - **Propósito**: Preparar diccionario de valores para crear factura
 - **Uso**: Hook para heredar tipo de cambio del presupuesto a la factura
 
-### `purchase.order._get_currency_rate()`
+#### `purchase.order._get_currency_rate()`
 - **Propósito**: Obtener tipo de cambio a usar en cálculos
 - **Uso**: Sobrescrito para retornar tasa manual
 
-### `account.move._get_invoice_in_payment_state()`
-- **Propósito**: Calcular estado de pago de factura
-- **Uso**: Inyectar contexto de tipo de cambio manual
+### Métodos de Facturas
+
+#### `account.move._recompute_dynamic_lines(recompute_all_taxes, recompute_tax_base_amount)`
+- **Propósito**: Recalcular líneas dinámicas (impuestos, totales, apuntes contables)
+- **Uso**: Inyectar contexto con tipo de cambio manual antes de recalcular
+- **Crítico**: Punto de entrada donde se propaga el contexto
+
+#### `account.move._get_currency_rate()`
+- **Propósito**: Obtener tipo de cambio de la factura
+- **Uso**: Sobrescrito para retornar tasa manual
+
+### Métodos de Apuntes Contables
+
+#### `account.move.line._compute_currency_rate()`
+- **Propósito**: Calcular y almacenar tipo de cambio en cada línea
+- **Uso**: Sobrescrito para asignar tasa manual directamente
+
+#### `account.move.line._compute_debit_credit()` ⭐
+- **Propósito**: Convertir `amount_currency` a `debit`/`credit` en moneda de compañía
+- **Uso**: Sobrescrito para usar `_convert()` con contexto de tasa manual
+- **Crítico**: Aquí se genera el balance real de los apuntes contables
+
+#### `account.move.line._compute_balance()`
+- **Propósito**: Calcular balance como debit - credit
+- **Uso**: Sobrescrito para mantener consistencia contable
 
 ### ORM Methods Utilizados
 - `@api.onchange()`: Detectar cambios en campos y ejecutar lógica
@@ -350,6 +698,7 @@ def _compute_amount(self):
 - `with_context()`: Inyectar datos en el contexto de ejecución
 - `ensure_one()`: Verificar que se trabaja con un solo registro
 - `super()`: Llamar método de clase padre
+- `fields.Date.context_today()`: Obtener fecha actual del contexto
 
 ---
 

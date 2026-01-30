@@ -70,36 +70,70 @@ class AccountMove(models.Model):
 class AccountMoveLine(models.Model):
     _inherit = 'account.move.line'
 
-    @api.depends('currency_id', 'company_id', 'move_id.date')
+    @api.depends(
+        'currency_id',
+        'company_id',
+        'move_id.date',
+        'move_id.use_custom_rate',
+        'move_id.custom_currency_rate',
+    )
     def _compute_currency_rate(self):
         """
-        Por qué: Calcular y almacenar el tipo de cambio para cada línea
+        Por qué: Calcular el tipo de cambio correcto para cada línea
         Patrón: Computed field que prioriza el tipo de cambio manual
-        Tip: Este campo es usado por Odoo para conversiones de moneda
+        Tip: Este método SÍ existe en Odoo 17 y es CRÍTICO para conversiones
         """
         for line in self:
-            # Por qué: Si la factura tiene tipo de cambio manual, usarlo
+            # Por qué: Si la factura tiene tipo de cambio manual, usarlo directamente
             if line.move_id.use_custom_rate and line.move_id.custom_currency_rate:
                 line.currency_rate = line.move_id.custom_currency_rate
             else:
-                # Por qué: Sino, calcular tipo de cambio estándar
+                # Por qué: Sino, delegar al cálculo estándar
                 super(AccountMoveLine, line)._compute_currency_rate()
 
-    def _get_fields_onchange_balance_model(
-        self, quantity, discount, amount_currency, move_type, currency, taxes, price_subtotal_before_discount, force_computation=False
-    ):
+    @api.depends('amount_currency', 'currency_id', 'move_id.use_custom_rate', 'move_id.custom_currency_rate')
+    def _compute_debit_credit(self):
         """
-        Por qué: Sobrescribir cálculo de balance para usar tipo de cambio manual
-        Patrón: Hook method - interceptamos conversión de moneda en apuntes contables
-        Tip: Este método es llamado cuando se calculan los importes en moneda de la compañía
+        Por qué: Recalcular débito/crédito usando el tipo de cambio manual
+        Patrón: Override del método que calcula los importes en moneda de compañía
+        Tip: Aquí es donde realmente se convierten los montos
         """
-        # Por qué: Si hay tipo de cambio manual, inyectarlo en el contexto
-        if self.move_id.use_custom_rate and self.move_id.custom_currency_rate:
-            self = self.with_context(
-                custom_currency_rate=self.move_id.custom_currency_rate
-            )
+        for line in self:
+            # Por qué: Si hay tipo de cambio manual, usar método _convert con contexto
+            if line.move_id.use_custom_rate and line.move_id.custom_currency_rate:
+                company_currency = line.move_id.company_id.currency_id
 
-        return super()._get_fields_onchange_balance_model(
-            quantity, discount, amount_currency, move_type, currency, taxes,
-            price_subtotal_before_discount, force_computation
-        )
+                if line.currency_id and line.currency_id != company_currency:
+                    # Por qué: Usar método _convert con contexto para mantener consistencia
+                    # Patrón: Delegamos a res.currency que ya tiene el override
+                    balance = line.currency_id.with_context(
+                        custom_currency_rate=line.move_id.custom_currency_rate
+                    )._convert(
+                        line.amount_currency,
+                        company_currency,
+                        line.move_id.company_id,
+                        line.move_id.date or fields.Date.context_today(line),
+                        round=True
+                    )
+                else:
+                    balance = line.amount_currency
+
+                # Por qué: Asignar a débito o crédito según el signo
+                if balance > 0:
+                    line.debit = balance
+                    line.credit = 0
+                else:
+                    line.debit = 0
+                    line.credit = -balance
+            else:
+                # Por qué: Sino, usar cálculo estándar de Odoo
+                super(AccountMoveLine, line)._compute_debit_credit()
+
+    @api.depends('debit', 'credit')
+    def _compute_balance(self):
+        """
+        Por qué: Asegurar que balance sea consistente con debit/credit
+        Patrón: Balance = debit - credit (siempre)
+        """
+        for line in self:
+            line.balance = line.debit - line.credit
