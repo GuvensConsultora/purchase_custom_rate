@@ -1,0 +1,5 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_purchase_order_user,purchase.order.user,purchase.model_purchase_order,purchase.group_purchase_user,1,1,1,0
+access_purchase_order_manager,purchase.order.manager,purchase.model_purchase_order,purchase.group_purchase_manager,1,1,1,1
+access_account_move_user,account.move.user,account.model_account_move,account.group_account_invoice,1,1,1,0
+access_account_move_manager,account.move.manager,account.model_account_move,account.group_account_manager,1,1,1,1
