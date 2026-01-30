@@ -19,6 +19,33 @@ class AccountMove(models.Model):
         help='Activar para usar el tipo de cambio manual definido'
     )
 
+    @api.model_create_multi
+    def create(self, vals_list):
+        """
+        Por qué: Agregar mensaje en chatter cuando se usa tipo de cambio manual
+        Patrón: Hook method - interceptamos la creación de factura
+        """
+        moves = super().create(vals_list)
+
+        for move in moves:
+            # Por qué: Si la factura usa tipo de cambio manual, notificar en chatter
+            if move.use_custom_rate and move.custom_currency_rate and move.move_type in ['in_invoice', 'in_refund']:
+                move.message_post(
+                    body=f"""
+                        <p><strong>💱 Tipo de Cambio Manual Aplicado</strong></p>
+                        <p>Esta factura utiliza un tipo de cambio manual:</p>
+                        <ul>
+                            <li><strong>Tasa aplicada:</strong> {move.custom_currency_rate:,.6f}</li>
+                            <li><strong>Moneda:</strong> {move.currency_id.name} → {move.company_id.currency_id.name}</li>
+                        </ul>
+                        <p><em>Todos los apuntes contables se calcularon con esta tasa.</em></p>
+                    """,
+                    message_type='notification',
+                    subtype_xmlid='mail.mt_note',
+                )
+
+        return moves
+
     @api.onchange('currency_id', 'invoice_date')
     def _onchange_currency_rate(self):
         """
