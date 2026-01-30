@@ -46,6 +46,12 @@
             <!-- Por qué: Mismo patrón que en purchase.order -->
             <xpath expr="//field[@name='currency_id']" position="after">
 
+                <!--
+                    Por qué: Declarar purchase_id invisible para usarlo en modifiers
+                    Tip: Campos con grupos restringidos deben declararse en vista
+                -->
+                <field name="purchase_id" invisible="1"/>
+
                 <field name="use_custom_rate"
                        widget="boolean_toggle"
                        string="Tipo de Cambio Manual"
