@@ -49,33 +49,57 @@ class AccountMove(models.Model):
         # Por qué: Sino, usar comportamiento estándar de Odoo
         return super()._get_currency_rate()
 
-    @api.model
-    def _get_invoice_in_payment_state(self):
+    def _recompute_dynamic_lines(self, recompute_all_taxes=False, recompute_tax_base_amount=False):
         """
-        Por qué: Asegurar que los pagos también respeten el tipo de cambio manual
-        Patrón: Hook method para interceptar flujo de pagos
+        Por qué: Asegurar que al recalcular líneas se use el tipo de cambio manual
+        Patrón: Hook method - interceptamos recálculo de apuntes contables
+        Tip: Este método se ejecuta cada vez que se modifican las líneas de factura
         """
-        # Por qué: Inyectar tipo de cambio en contexto si existe
+        # Por qué: Inyectar tipo de cambio manual en contexto para conversiones
         if self.use_custom_rate and self.custom_currency_rate:
-            self = self.with_context(custom_rate=self.custom_currency_rate)
+            self = self.with_context(
+                custom_currency_rate=self.custom_currency_rate
+            )
 
-        return super()._get_invoice_in_payment_state()
+        return super()._recompute_dynamic_lines(
+            recompute_all_taxes=recompute_all_taxes,
+            recompute_tax_base_amount=recompute_tax_base_amount
+        )
 
 
 class AccountMoveLine(models.Model):
     _inherit = 'account.move.line'
 
-    @api.depends('quantity', 'price_unit', 'tax_ids', 'discount')
-    def _compute_totals(self):
+    @api.depends('currency_id', 'company_id', 'move_id.date')
+    def _compute_currency_rate(self):
         """
-        Por qué: Asegurar que las líneas de factura usen el tipo de cambio manual
-        Patrón: Computed field override con contexto personalizado
+        Por qué: Calcular y almacenar el tipo de cambio para cada línea
+        Patrón: Computed field que prioriza el tipo de cambio manual
+        Tip: Este campo es usado por Odoo para conversiones de moneda
         """
         for line in self:
-            # Por qué: Heredar tipo de cambio del encabezado de factura
+            # Por qué: Si la factura tiene tipo de cambio manual, usarlo
             if line.move_id.use_custom_rate and line.move_id.custom_currency_rate:
-                line = line.with_context(
-                    custom_rate=line.move_id.custom_currency_rate
-                )
+                line.currency_rate = line.move_id.custom_currency_rate
+            else:
+                # Por qué: Sino, calcular tipo de cambio estándar
+                super(AccountMoveLine, line)._compute_currency_rate()
 
-        return super(AccountMoveLine, self)._compute_totals()
+    def _get_fields_onchange_balance_model(
+        self, quantity, discount, amount_currency, move_type, currency, taxes, price_subtotal_before_discount, force_computation=False
+    ):
+        """
+        Por qué: Sobrescribir cálculo de balance para usar tipo de cambio manual
+        Patrón: Hook method - interceptamos conversión de moneda en apuntes contables
+        Tip: Este método es llamado cuando se calculan los importes en moneda de la compañía
+        """
+        # Por qué: Si hay tipo de cambio manual, inyectarlo en el contexto
+        if self.move_id.use_custom_rate and self.move_id.custom_currency_rate:
+            self = self.with_context(
+                custom_currency_rate=self.move_id.custom_currency_rate
+            )
+
+        return super()._get_fields_onchange_balance_model(
+            quantity, discount, amount_currency, move_type, currency, taxes,
+            price_subtotal_before_discount, force_computation
+        )
