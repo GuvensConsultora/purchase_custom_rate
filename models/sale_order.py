@@ -2,11 +2,11 @@
 from odoo import models, fields, api
 
 
-class PurchaseOrder(models.Model):
-    _inherit = 'purchase.order'
+class SaleOrder(models.Model):
+    _inherit = 'sale.order'
 
-    # Por qué: Permitir definir tipo de cambio manual independiente del sistema
-    # Patrón: Override de comportamiento estándar de Odoo
+    # Por qué: Permitir definir tipo de cambio manual en ventas
+    # Patrón: Misma funcionalidad que en purchase.order para consistencia
     custom_currency_rate = fields.Float(
         string='Tipo de Cambio Manual',
         digits=(12, 6),
@@ -44,12 +44,12 @@ class PurchaseOrder(models.Model):
 
     def _prepare_invoice(self):
         """
-        Por qué: Heredar tipo de cambio manual a la factura generada
+        Por qué: Heredar tipo de cambio manual a la factura de cliente
         Patrón: Hook method - interceptamos la creación de factura
         """
         invoice_vals = super()._prepare_invoice()
 
-        # Por qué: Transferir configuración de tipo de cambio manual a factura
+        # Por qué: Transferir configuración de tipo de cambio a factura
         if self.use_custom_rate and self.custom_currency_rate:
             invoice_vals.update({
                 'use_custom_rate': True,
@@ -74,10 +74,10 @@ class PurchaseOrder(models.Model):
         return super()._get_currency_rate()
 
 
-class PurchaseOrderLine(models.Model):
-    _inherit = 'purchase.order.line'
+class SaleOrderLine(models.Model):
+    _inherit = 'sale.order.line'
 
-    @api.depends('product_qty', 'price_unit', 'taxes_id')
+    @api.depends('product_uom_qty', 'price_unit', 'tax_id')
     def _compute_amount(self):
         """
         Por qué: Asegurar que los cálculos usen el tipo de cambio (manual o automático)
@@ -92,4 +92,4 @@ class PurchaseOrderLine(models.Model):
                     custom_rate=line.order_id.custom_currency_rate
                 )
 
-        return super(PurchaseOrderLine, self)._compute_amount()
+        return super(SaleOrderLine, self)._compute_amount()

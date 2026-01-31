@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!--
+        Por qué: Agregar campos de tipo de cambio manual en formulario de venta
+        Patrón: XPath inheritance - extendemos vista existente sin reescribirla
+    -->
+    <record id="view_sale_order_form_inherit_custom_rate" model="ir.ui.view">
+        <field name="name">sale.order.form.custom.rate</field>
+        <field name="model">sale.order</field>
+        <field name="inherit_id" ref="sale.view_order_form"/>
+        <field name="arch" type="xml">
+
+            <!-- Por qué: Colocar campos junto a currency_id para agrupación lógica -->
+            <xpath expr="//field[@name='currency_id']" position="after">
+
+                <!-- Por qué: Checkbox para activar/desactivar edición manual -->
+                <field name="use_custom_rate"
+                       widget="boolean_toggle"
+                       string="Tipo de Cambio Manual"/>
+
+                <!--
+                    Por qué: Campo SIEMPRE visible mostrando tasa del sistema
+                    Tip: readonly hace que solo sea editable cuando use_custom_rate=True
+                    Patrón: Transparencia - usuario siempre ve la tasa aplicada
+                -->
+                <field name="custom_currency_rate"
+                       readonly="not use_custom_rate"
+                       required="1"
+                       string="Tasa"/>
+
+            </xpath>
+
+        </field>
+    </record>
+
+</odoo>

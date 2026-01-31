@@ -19,13 +19,13 @@
                        string="Tipo de Cambio Manual"/>
 
                 <!--
-                    Por qué: Campo solo visible cuando se activa el checkbox
-                    Tip: invisible hace que el campo se oculte dinámicamente
-                    Patrón: Progressive disclosure - mostrar solo lo necesario
+                    Por qué: Campo SIEMPRE visible mostrando tasa del sistema
+                    Tip: readonly hace que solo sea editable cuando use_custom_rate=True
+                    Patrón: Transparencia - usuario siempre ve la tasa aplicada
                 -->
                 <field name="custom_currency_rate"
-                       invisible="not use_custom_rate"
-                       required="use_custom_rate"
+                       readonly="not use_custom_rate"
+                       required="1"
                        string="Tasa"/>
 
             </xpath>
@@ -58,16 +58,16 @@
                 <field name="use_custom_rate"
                        widget="boolean_toggle"
                        string="Tipo de Cambio Manual"
-                       invisible="move_type not in ['in_invoice', 'in_refund']"/>
+                       invisible="move_type not in ['in_invoice', 'in_refund', 'out_invoice', 'out_refund']"/>
 
                 <!--
-                    Por qué: readonly cuando viene de purchase (para evitar inconsistencias)
-                    Tip: purchase_id se llena automáticamente si viene de presupuesto
+                    Por qué: Campo SIEMPRE visible mostrando tasa
+                    Tip: readonly cuando viene de presupuesto O cuando no está activado use_custom_rate
+                    Patrón: Transparencia total del tipo de cambio aplicado
                 -->
                 <field name="custom_currency_rate"
-                       invisible="not use_custom_rate or move_type not in ['in_invoice', 'in_refund']"
-                       readonly="purchase_id"
-                       required="use_custom_rate and move_type in ['in_invoice', 'in_refund']"
+                       readonly="purchase_id or not use_custom_rate"
+                       required="move_type in ['in_invoice', 'in_refund', 'out_invoice', 'out_refund']"
                        string="Tasa"/>
 
             </xpath>
