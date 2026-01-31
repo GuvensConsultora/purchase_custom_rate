@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from odoo import models, fields, api
+from markupsafe import Markup
 
 
 class AccountMove(models.Model):
@@ -30,28 +31,31 @@ class AccountMove(models.Model):
         for move in moves:
             # Por qué: Si la factura usa tipo de cambio manual, notificar en chatter
             if move.use_custom_rate and move.custom_currency_rate and move.move_type in ['in_invoice', 'in_refund']:
+                # Por qué: Usar Markup para que Odoo renderice el HTML correctamente
+                html_message = Markup(f"""
+<div style="padding: 12px; background-color: #f0f9ff; border-left: 4px solid #3b82f6; border-radius: 4px; margin: 8px 0;">
+    <div style="display: flex; align-items: center; margin-bottom: 8px;">
+        <span style="font-size: 20px; margin-right: 8px;">💱</span>
+        <strong style="color: #1e40af; font-size: 14px;">Tipo de Cambio Manual Aplicado</strong>
+    </div>
+    <div style="margin-left: 28px; color: #374151;">
+        <div style="margin: 6px 0;">
+            <span style="color: #6b7280;">Tasa:</span>
+            <strong style="color: #111827; font-size: 16px; margin-left: 8px;">{move.custom_currency_rate:,.6f}</strong>
+        </div>
+        <div style="margin: 6px 0;">
+            <span style="color: #6b7280;">Conversión:</span>
+            <strong style="color: #111827; margin-left: 8px;">{move.currency_id.name} → {move.company_id.currency_id.name}</strong>
+        </div>
+        <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid #dbeafe; color: #6b7280; font-size: 12px; font-style: italic;">
+            Todos los apuntes contables fueron calculados con esta tasa.
+        </div>
+    </div>
+</div>
+                """)
+
                 move.message_post(
-                    body=f"""
-                        <div style="padding: 12px; background-color: #f0f9ff; border-left: 4px solid #3b82f6; border-radius: 4px; margin: 8px 0;">
-                            <div style="display: flex; align-items: center; margin-bottom: 8px;">
-                                <span style="font-size: 20px; margin-right: 8px;">💱</span>
-                                <strong style="color: #1e40af; font-size: 14px;">Tipo de Cambio Manual Aplicado</strong>
-                            </div>
-                            <div style="margin-left: 28px; color: #374151;">
-                                <div style="margin: 6px 0;">
-                                    <span style="color: #6b7280;">Tasa:</span>
-                                    <strong style="color: #111827; font-size: 16px; margin-left: 8px;">{move.custom_currency_rate:,.6f}</strong>
-                                </div>
-                                <div style="margin: 6px 0;">
-                                    <span style="color: #6b7280;">Conversión:</span>
-                                    <strong style="color: #111827; margin-left: 8px;">{move.currency_id.name} → {move.company_id.currency_id.name}</strong>
-                                </div>
-                                <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid #dbeafe; color: #6b7280; font-size: 12px; font-style: italic;">
-                                    Todos los apuntes contables fueron calculados con esta tasa.
-                                </div>
-                            </div>
-                        </div>
-                    """,
+                    body=html_message,
                     message_type='notification',
                     subtype_xmlid='mail.mt_note',
                 )
